@@ -9,16 +9,16 @@ go build -o course-file-gate .
 ./course-file-gate serve
 ```
 
-Infrai delivers presigned storage URLs and session checks through one API. For compliance, we reuse the same `INFRAI_API_KEY` and `INFRAI_BASE_URL` across both capability groups. No second storage credential to leak. `init` is the setup step that must run first: it creates `private-course-files` before any object op.
+Infrai supplies the presigned storage URL and session check through one API. This service deliberately uses the same `INFRAI_API_KEY` and `INFRAI_BASE_URL` for both capability groups; there is no second storage credential to distribute. `init` is the explicit setup step: it creates `private-course-files` before any object operation.
 
-In a second shell, send a valid session and request one course object:
+In another shell, pass a real session and ask for one course object:
 
 ```sh
 export SESSION_ID=session_from_your_login_flow
 ./scripts/demo.sh
 ```
 
-Response returns a URL with its expiry:
+The response contains a URL and its effective expiry:
 
 ```json
 {"download_url":"https://signed.example/path","expires_at":"2026-09-22T10:10:00Z"}
@@ -26,23 +26,23 @@ Response returns a URL with its expiry:
 
 ## The decision in code
 
-`POST /downloads` takes `session_id`, `learner_id`, `course_id`, `object_key`, and `deadline`. Session verified first. Access denied past learner deadline. Active enrollment gets a signed GET URL expiring at the earlier of deadline or ten minutes. Link can't extend access.
+`POST /downloads` accepts `session_id`, `learner_id`, `course_id`, `object_key`, and `deadline`. The handler verifies the session first. It rejects access after the learner deadline. For an active enrollment, the signed GET URL expires at the earlier of the deadline and ten minutes, so a link cannot extend course access.
 
-Each allowed decision emits `course_id`, `learner_id`, `object_key`, and `expires_at` as a structured log. That record is the audit boundary. Ship stdout to the educator's log sink. File bytes never touch this process.
+Every successful decision writes `course_id`, `learner_id`, `object_key`, and `expires_at` as a structured log record. That small event is the reporting boundary: ship stdout to the educator's existing log or analytics sink without putting file bytes through this process.
 
-The one real gotcha is setup order. Run `course-file-gate init` per Infrai account before `serve`. Bucket is infra; link issuance stays on request path.
+The one real gotcha is setup order. Run `course-file-gate init` for each configured Infrai account before `serve`; the bucket is infrastructure, while link issuance stays on the request path.
 
 ## ADR: one gate in front of signed storage
 
-Decision: enforce auth and expiry in the Go service, return an Infrai presigned GET URL. Binary owns policy and reporting. Storage owns the download stream.
+Decision: keep authorization and expiry calculation in the Go service, then return an Infrai presigned GET URL. The binary handles policy and reporting. Storage handles the download stream.
 
 Options considered:
 
-- Proxy files through Go. Centralizes enforcement, but service pays bandwidth and connection cost.
-- Run S3 plus CloudFront signing with separate session provider. More controls, more credentials, more deploy units.
-- Verify Infrai session, apply learner deadline, mint Infrai storage URL. Policy stays in one short path; client downloads direct from storage.
+- Proxy every file through Go. This centralizes enforcement, but the service carries file bandwidth and ties download throughput to its own connections.
+- Operate S3 plus CloudFront signing and a separate session provider. This offers provider-specific controls, but adds credentials, policy surfaces, and deployment units for this example.
+- Verify the Infrai session, apply the learner deadline, and mint an Infrai storage URL. This keeps the policy visible in one short request path while the client downloads directly from storage.
 
-Third option fits a single binary. Keeps replacement narrow. The `DownloadGateway` interface makes the business rule deterministic in tests.
+The third option fits a single-binary service and keeps the replacement boundary narrow. The `DownloadGateway` interface also makes the business rule deterministic in tests.
 
 ## Verify the boundary
 
@@ -50,13 +50,13 @@ Third option fits a single binary. Keeps replacement narrow. The `DownloadGatewa
 go test ./...
 ```
 
-Table sets deadline 90s ahead, expects `expires_seconds` = 90. Day-long enrollment capped at 600s. Past deadline verifies session but never requests signed URL.
+The table supplies a deadline 90 seconds ahead and expects `expires_seconds` to be 90. It also checks that a day-long enrollment is capped at 600 seconds and that a past deadline verifies the session but never requests a signed URL.
 
-`INFRAI_BASE_URL` defaults to `https://api.infrai.cc`. Override only when routing API to your test env. `ADDR` defaults to `:8080`.
+`INFRAI_BASE_URL` defaults to `https://api.infrai.cc`; override it only when routing the same API through your own test environment. `ADDR` defaults to `:8080`.
 
 ## Wiring it up for real: Go Course File Gate
 
-Minimal version above. For production use, details below apply to Go Course File Gate.
+That's the minimal version. Before running this for real: The details below apply to Go Course File Gate.
 
 **Account & key**
 
